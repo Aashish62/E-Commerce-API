@@ -20,11 +20,12 @@ const PORT = process.env.PORT || 3000;
     await sequelize.sync({ alter: true });
     console.log("🔄 DB synced");
 
-    app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`📘 Swagger Docs: http://localhost:${PORT}/api-docs`);
-    });
-
+    if (process.env.NODE_ENV !== "development") {
+      server.listen(
+        () => console.log(`Server started on port : ${PORT}`),
+        console.log(`📘 Swagger Docs: http://localhost:${PORT}/api-docs`)
+      );
+    }
   } catch (err) {
     console.error("❌ Failed to start server:", err);
     process.exit(1);

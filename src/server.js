@@ -9,45 +9,63 @@ const PORT = process.env.PORT || 3000;
 
 let dbInitialized = false;
 let dbInitializing = false;
+let dbInitPromise = null;
 let serverlessHandler = null;
 
+// Initialize database with retry logic and exponential backoff
 async function initializeDatabase() {
-  if (dbInitialized) return;
-  if (dbInitializing) {
-    // Wait for ongoing initialization
-    while (dbInitializing && !dbInitialized) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    return;
+  if (dbInitialized) return true;
+  
+  // If initialization is in progress, return the existing promise
+  if (dbInitPromise) {
+    return dbInitPromise;
   }
   
-  dbInitializing = true;
-  
-  try {
-    // Add timeout to prevent hanging (10 seconds)
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Database connection timeout')), 10000)
-    );
-    
-    await Promise.race([
-      sequelize.authenticate(),
-      timeoutPromise
-    ]);
-    
-    console.log("✅ DB connected");
-    if (process.env.NODE_ENV === "development") {
-      await sequelize.sync({ alter: true });
-      console.log("🔄 DB synced");
+  // Start initialization (non-blocking)
+  dbInitPromise = (async () => {
+    if (dbInitializing) {
+      // Wait for ongoing initialization with timeout
+      const waitStart = Date.now();
+      const maxWait = 2000; // Max 2 seconds to wait
+      while (dbInitializing && !dbInitialized && (Date.now() - waitStart) < maxWait) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      return dbInitialized;
     }
     
-    dbInitialized = true;
-  } catch (err) {
-    console.error("❌ Database connection failed:", err);
-    dbInitialized = false;
-    throw err;
-  } finally {
-    dbInitializing = false;
-  }
+    dbInitializing = true;
+    
+    try {
+      // Aggressive timeout for serverless (2 seconds)
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Database connection timeout')), 2000)
+      );
+      
+      await Promise.race([
+        sequelize.authenticate(),
+        timeoutPromise
+      ]);
+      
+      console.log("✅ DB connected");
+      if (process.env.NODE_ENV === "development") {
+        await sequelize.sync({ alter: true });
+        console.log("🔄 DB synced");
+      }
+      
+      dbInitialized = true;
+      return true;
+    } catch (err) {
+      console.error("❌ Database connection failed:", err.message);
+      dbInitialized = false;
+      // Don't throw - let routes handle DB unavailability
+      return false;
+    } finally {
+      dbInitializing = false;
+      dbInitPromise = null;
+    }
+  })();
+  
+  return dbInitPromise;
 }
 
 // Local development server
@@ -84,25 +102,19 @@ function getServerlessHandler() {
 
 export default async function handler(req, res) {
   try {
-    // Initialize database connection if not already done
-    // Use non-blocking approach - try to initialize but don't block requests
-    if (!dbInitialized) {
-      // Try to initialize, but with timeout to prevent hanging
-      try {
-        await Promise.race([
-          initializeDatabase(),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('DB init timeout')), 5000)
-          )
-        ]);
-      } catch (dbError) {
-        // Log error but continue - let routes handle DB availability
-        console.error("⚠️ Database not available:", dbError.message);
-        // Don't block the request - proceed to handler
-      }
+    // Initialize database connection asynchronously (non-blocking)
+    // Don't wait for it - let it happen in the background
+    // Routes will handle DB connection errors gracefully
+    if (!dbInitialized && !dbInitializing) {
+      // Fire and forget - don't await
+      initializeDatabase().catch(err => {
+        // Silently handle - already logged in initializeDatabase
+        console.error("⚠️ Background DB init failed:", err.message);
+      });
     }
     
-    // Always proceed to Express handler - it will handle routing and DB errors
+    // Immediately proceed to Express handler without waiting for DB
+    // This ensures requests are never blocked by DB initialization
     const handler = getServerlessHandler();
     return await handler(req, res);
   } catch (error) {

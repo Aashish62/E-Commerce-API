@@ -2,11 +2,13 @@ import "dotenv/config";
 import app from "./app.js";
 import models from "./models/index.js";
 import generateDocs from "./config/swagger.js";
+import serverless from "serverless-http";
 
 const { sequelize } = models;
 const PORT = process.env.PORT || 3000;
 
 let dbInitialized = false;
+let serverlessHandler = null;
 
 async function initializeDatabase() {
   if (dbInitialized) return;
@@ -48,6 +50,16 @@ if (process.argv.includes("--docs")) {
   })();
 }
 
+// Initialize serverless handler lazily
+function getServerlessHandler() {
+  if (!serverlessHandler) {
+    serverlessHandler = serverless(app, {
+      binary: ['image/*', 'application/pdf']
+    });
+  }
+  return serverlessHandler;
+}
+
 export default async function handler(req, res) {
   try {
     // Initialize database connection if not already done
@@ -55,8 +67,9 @@ export default async function handler(req, res) {
       await initializeDatabase();
     }
     
-    // Handle the request with Express app
-    return app(req, res);
+    // Use serverless-http to properly handle Express app
+    const handler = getServerlessHandler();
+    return await handler(req, res);
   } catch (error) {
     // Ensure we send a response even if initialization fails
     console.error("❌ Handler error:", error);

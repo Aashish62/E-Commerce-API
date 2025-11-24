@@ -32,7 +32,7 @@ if (process.argv.includes("--docs")) {
     await generateDocs();
     process.exit(0);
   })();
-} else if (process.env.NODE_ENV === "development" || !process.env.VERCEL) {
+} else if (process.env.NODE_ENV === "production" || !process.env.VERCEL) {
   (async () => {
     try {
       await initializeDatabase();
@@ -49,9 +49,28 @@ if (process.argv.includes("--docs")) {
 }
 
 export default async function handler(req, res) {
-  if (!dbInitialized) {
-    await initializeDatabase();
+  try {
+    // Initialize database connection if not already done
+    if (!dbInitialized) {
+      await initializeDatabase();
+    }
+    
+    // Handle the request with Express app
+    return app(req, res);
+  } catch (error) {
+    // Ensure we send a response even if initialization fails
+    console.error("❌ Handler error:", error);
+    
+    // If headers haven't been sent, send error response
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        message: "Internal server error",
+        error: process.env.NODE_ENV === "development" ? error.message : undefined
+      });
+    }
+    
+    // Return to prevent further execution
+    return;
   }
-  
-  return app(req, res);
 }
